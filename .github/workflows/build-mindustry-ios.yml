@@ -64,6 +64,35 @@ jobs:
           test -d "$MINDUSTRY_DIR" && echo "OK: MINDUSTRY_DIR exists" || { echo "MISSING: MINDUSTRY_DIR"; exit 1; }
           test -f "$MINDUSTRY_DIR/gradlew" && echo "OK: gradlew found" || { echo "MISSING: gradlew"; exit 1; }
 
+      # Разведка: смотрим, какие таски вообще есть у Arc для backend-robovm и
+      # arc-core, отфильтрованные по ключевым словам. Известно, что нужные
+      # iOS-фреймворки (MetalANGLEKit и т.п.) не лежат в git — они либо
+      # скачиваются gradle-таском (Arc использует de.undercouch.download —
+      # тот же плагин, что и libGDX для своего fetchMetalANGLEKit), либо
+      # собираются из исходников через jnigen. Смотрим, что реально есть,
+      # вместо того чтобы гадать по докам.
+      - name: Discover Arc's iOS-related Gradle tasks (diagnostic)
+        run: |
+          set +e
+          cd "$RUNNER_WORKSPACE/Arc"
+          chmod +x gradlew
+          echo "===== backends:backend-robovm tasks =====" \
+            | tee "$LOG_DIR/arc-tasks.txt"
+          ./gradlew backends:backend-robovm:tasks --all >> "$LOG_DIR/arc-tasks.txt" 2>&1
+          echo "===== arc-core tasks =====" >> "$LOG_DIR/arc-tasks.txt"
+          ./gradlew arc-core:tasks --all >> "$LOG_DIR/arc-tasks.txt" 2>&1
+
+          echo "----- filtered task names (ios/metal/angle/fetch/download) -----"
+          grep -inE "ios|metal|angle|fetch|download" "$LOG_DIR/arc-tasks.txt" || echo "(ничего не найдено по фильтру)"
+
+      - name: Upload task discovery log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arc-task-discovery
+          path: ${{ env.LOG_DIR }}/arc-tasks.txt
+          if-no-files-found: warn
+
       # ios/build.gradle жёстко прописывает iosSkipSigning = false и требует
       # реальный Apple-сертификат/provisioning profile. Нам это не нужно —
       # LiveContainer переподписывает приложение сам при установке.
