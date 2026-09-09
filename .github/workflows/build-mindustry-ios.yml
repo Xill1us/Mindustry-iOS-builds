@@ -80,33 +80,54 @@ jobs:
       # Если сборка упадёт именно на шаге подписи/архивации ipa, .app к этому
       # моменту уже скомпилирован на диске — его подхватит фолбэк-шаг ниже.
       #
-      # ВАЖНО: весь вывод уходит в файл build.log, а не в консоль джобы —
-      # иначе с --info/прогресс-баром Gradle легко получить лог на 20 000+
-      # строк, который потом невозможно нормально прочитать.
+      # ВАЖНО: cd делается ВНУТРИ скрипта (не через working-directory:), потому
+      # что если working-directory: указывает на несуществующую папку, GitHub
+      # Actions проваливает шаг ДО запуска shell — и никакого лога не остаётся
+      # вообще, даже пустого. А так — лог создаётся в любом случае.
+      #
+      # Весь вывод Gradle уходит в файл, а не в консоль джобы — иначе с
+      # --info/перерисовкой прогресс-бара легко получить лог на 20 000+ строк.
       # --console=plain убирает перерисовку прогресс-бара (главный источник
-      # раздутия), без --info используется обычный уровень логирования.
+      # раздутия), --info не используется — обычный уровень логирования.
       - name: Build iOS app via RoboVM (ios:deploy)
-        working-directory: ${{ env.MINDUSTRY_DIR }}
         run: |
           set +e
-          ./gradlew ios:deploy --stacktrace --console=plain --warning-mode=none \
-            > "$GITHUB_WORKSPACE/build.log" 2>&1
+          LOG="$LOG_DIR/build.log"
+          : > "$LOG"
+
+          if [ ! -d "$MINDUSTRY_DIR" ]; then
+            echo "MINDUSTRY_DIR does not exist: $MINDUSTRY_DIR" >> "$LOG"
+            echo "GRADLE_EXIT=127" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          (
+            cd "$MINDUSTRY_DIR" && \
+            chmod +x gradlew && \
+            ./gradlew ios:deploy --stacktrace --console=plain --warning-mode=none
+          ) > "$LOG" 2>&1
           echo "GRADLE_EXIT=$?" >> "$GITHUB_ENV"
-          wc -l "$GITHUB_WORKSPACE/build.log"
+          echo "Log written to $LOG"
+          wc -l "$LOG"
           exit 0
 
       # Печатаем в лог джобы только релевантный кусок: от "Execution failed"
-      # (или от "FAILURE:") до конца, плюс отдельно все строки с ошибками
-      # компоновщика/компилятора с небольшим контекстом. Полный build.log
-      # всё равно уходит в артефакт ниже — если этой выжимки не хватит,
-      # можно попросить конкретный диапазон строк оттуда.
+      # (или от "What went wrong") до конца, плюс отдельно все строки с
+      # ошибками компоновщика/компилятора с небольшим контекстом. Полный
+      # build.log всё равно уходит в артефакт ниже.
       - name: Extract compact failure excerpt
         if: always()
         run: |
-          LOG="$GITHUB_WORKSPACE/build.log"
-          OUT="$GITHUB_WORKSPACE/build-failure-excerpt.txt"
-          TOTAL=$(wc -l < "$LOG" | tr -d ' ')
+          LOG="$LOG_DIR/build.log"
+          OUT="$LOG_DIR/build-failure-excerpt.txt"
 
+          if [ ! -f "$LOG" ]; then
+            echo "build.log не найден по пути $LOG — предыдущий шаг не создал файл." > "$OUT"
+            cat "$OUT"
+            exit 0
+          fi
+
+          TOTAL=$(wc -l < "$LOG" | tr -d ' ')
           {
             echo "Gradle exit code: ${GRADLE_EXIT:-unknown}"
             echo "Total log lines: $TOTAL"
@@ -130,17 +151,21 @@ jobs:
           cat "$OUT"
 
       - name: Show what RoboVM produced (debug)
-        working-directory: ${{ env.MINDUSTRY_DIR }}
         run: |
+          if [ ! -d "$MINDUSTRY_DIR" ]; then
+            echo "MINDUSTRY_DIR missing, nothing to look for"
+            exit 0
+          fi
+          cd "$MINDUSTRY_DIR"
           echo "---- *.ipa ----"
           find ios/build -iname "*.ipa" 2>/dev/null || true
           echo "---- *.app ----"
           find ios/build -iname "*.app" -maxdepth 6 2>/dev/null || true
 
       - name: Package / fakesign IPA for LiveContainer
-        working-directory: ${{ env.MINDUSTRY_DIR }}
         run: |
           set -e
+          cd "$MINDUSTRY_DIR"
 
           IPA="$(find ios/build -iname '*.ipa' 2>/dev/null | head -n1 || true)"
           if [ -n "$IPA" ]; then
@@ -186,9 +211,9 @@ jobs:
         with:
           name: build-logs
           path: |
-            build.log
-            build-failure-excerpt.txt
+            ${{ env.LOG_DIR }}/build.log
+            ${{ env.LOG_DIR }}/build-failure-excerpt.txt
             ${{ env.MINDUSTRY_DIR }}/ios/build.gradle
             ${{ env.MINDUSTRY_DIR }}/ios/robovm.properties
             ${{ env.MINDUSTRY_DIR }}/build/reports/problems/problems-report.html
-          if-no-files-found: ignore
+          if-no-files-found: warn
