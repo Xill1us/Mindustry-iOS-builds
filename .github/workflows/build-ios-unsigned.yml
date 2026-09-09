@@ -1,0 +1,51 @@
+name: Build Mindustry for LiveContainer
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout Mindustry 159.7
+        uses: actions/checkout@v4
+        with:
+          repository: Anuken/Mindustry
+          ref: v159.7
+          fetch-depth: 0
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Make Gradle executable
+        run: chmod +x ./gradlew
+
+      - name: Build iOS App Bundle
+        run: ./gradlew :ios:build -Probovm.device.name="iPhone" --stacktrace
+
+      - name: Package App Bundle for LiveContainer
+        run: |
+          # Ищем скомпилированную папку .app
+          APP_PATH=$(find ios/build -name "*.app" -type d | head -n 1)
+          
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: .app bundle not found!"
+            ls -laR ios/build
+            exit 1
+          fi
+
+          echo "Found bundle at: $APP_PATH"
+          # Упаковываем .app напрямую в ZIP (этот архив кушает LiveContainer)
+          cd $(dirname "$APP_PATH")
+          zip -r ~/Mindustry-159.7-LiveContainer.zip $(basename "$APP_PATH")
+
+      - name: Upload Zip Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mindustry-LiveContainer
+          path: ~/Mindustry-159.7-LiveContainer.zip
+          if-no-files-found: error
