@@ -15,6 +15,10 @@ on:
 jobs:
   build-ios:
     runs-on: macos-14
+    env:
+      # На случай если один из marketplace-экшенов ещё не обновился под Node 24 —
+      # чисто предупреждение, сборку не ломает, но глушим заранее.
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
     steps:
       - name: Select Xcode ${{ github.event.inputs.xcode_version }}
         uses: maxim-lobanov/setup-xcode@v1
@@ -42,10 +46,23 @@ jobs:
       # Arc должен лежать РЯДОМ с Mindustry (../../Arc относительно ios/), а не внутри
       - name: Clone Arc + Mindustry as sibling directories
         run: |
+          set -e
           cd "$RUNNER_WORKSPACE"
           git clone --depth=1 https://github.com/Anuken/Arc
           git clone --depth=1 --branch "${{ github.event.inputs.mindustry_ref }}" https://github.com/Anuken/Mindustry
           echo "MINDUSTRY_DIR=$RUNNER_WORKSPACE/Mindustry" >> "$GITHUB_ENV"
+          # Отдельная папка под логи — не зависит от того, где лежит Mindustry/чекаут репо,
+          # так что шаги с логами не могут "молча" не выполниться из-за неверного пути.
+          mkdir -p "$RUNNER_TEMP/logs"
+          echo "LOG_DIR=$RUNNER_TEMP/logs" >> "$GITHUB_ENV"
+
+      - name: Sanity check — confirm directories actually exist
+        run: |
+          echo "RUNNER_WORKSPACE=$RUNNER_WORKSPACE"
+          echo "MINDUSTRY_DIR=$MINDUSTRY_DIR"
+          ls -la "$RUNNER_WORKSPACE"
+          test -d "$MINDUSTRY_DIR" && echo "OK: MINDUSTRY_DIR exists" || { echo "MISSING: MINDUSTRY_DIR"; exit 1; }
+          test -f "$MINDUSTRY_DIR/gradlew" && echo "OK: gradlew found" || { echo "MISSING: gradlew"; exit 1; }
 
       # ios/build.gradle жёстко прописывает iosSkipSigning = false и требует
       # реальный Apple-сертификат/provisioning profile. Нам это не нужно —
@@ -62,10 +79,55 @@ jobs:
       # ios:deploy = ios:copyAssets (tools:pack + copyNatives) + ios:createIPA
       # Если сборка упадёт именно на шаге подписи/архивации ipa, .app к этому
       # моменту уже скомпилирован на диске — его подхватит фолбэк-шаг ниже.
+      #
+      # ВАЖНО: весь вывод уходит в файл build.log, а не в консоль джобы —
+      # иначе с --info/прогресс-баром Gradle легко получить лог на 20 000+
+      # строк, который потом невозможно нормально прочитать.
+      # --console=plain убирает перерисовку прогресс-бара (главный источник
+      # раздутия), без --info используется обычный уровень логирования.
       - name: Build iOS app via RoboVM (ios:deploy)
         working-directory: ${{ env.MINDUSTRY_DIR }}
-        run: ./gradlew ios:deploy --stacktrace --info
-        continue-on-error: true
+        run: |
+          set +e
+          ./gradlew ios:deploy --stacktrace --console=plain --warning-mode=none \
+            > "$GITHUB_WORKSPACE/build.log" 2>&1
+          echo "GRADLE_EXIT=$?" >> "$GITHUB_ENV"
+          wc -l "$GITHUB_WORKSPACE/build.log"
+          exit 0
+
+      # Печатаем в лог джобы только релевантный кусок: от "Execution failed"
+      # (или от "FAILURE:") до конца, плюс отдельно все строки с ошибками
+      # компоновщика/компилятора с небольшим контекстом. Полный build.log
+      # всё равно уходит в артефакт ниже — если этой выжимки не хватит,
+      # можно попросить конкретный диапазон строк оттуда.
+      - name: Extract compact failure excerpt
+        if: always()
+        run: |
+          LOG="$GITHUB_WORKSPACE/build.log"
+          OUT="$GITHUB_WORKSPACE/build-failure-excerpt.txt"
+          TOTAL=$(wc -l < "$LOG" | tr -d ' ')
+
+          {
+            echo "Gradle exit code: ${GRADLE_EXIT:-unknown}"
+            echo "Total log lines: $TOTAL"
+            echo
+
+            START_LINE=$(grep -n -m1 -E "^\* What went wrong:|Execution failed for task" "$LOG" | head -n1 | cut -d: -f1)
+            if [ -n "$START_LINE" ]; then
+              echo "===== FAILURE BLOCK (from line $START_LINE, up to 300 lines) ====="
+              tail -n +"$START_LINE" "$LOG" | head -n 300
+            else
+              echo "===== 'What went wrong' блок не найден, показываю хвост лога ====="
+              tail -n 200 "$LOG"
+            fi
+
+            echo
+            echo "===== Lines matching ld:/clang error:/Undefined symbols (with context) ====="
+            grep -n -B2 -A20 -E "ld: |clang(\+\+)?: error|Undefined symbols|linker command failed" "$LOG" | head -n 300
+          } > "$OUT"
+
+          echo "----- excerpt (also uploaded as an artifact) -----"
+          cat "$OUT"
 
       - name: Show what RoboVM produced (debug)
         working-directory: ${{ env.MINDUSTRY_DIR }}
@@ -124,6 +186,9 @@ jobs:
         with:
           name: build-logs
           path: |
+            build.log
+            build-failure-excerpt.txt
             ${{ env.MINDUSTRY_DIR }}/ios/build.gradle
             ${{ env.MINDUSTRY_DIR }}/ios/robovm.properties
+            ${{ env.MINDUSTRY_DIR }}/build/reports/problems/problems-report.html
           if-no-files-found: ignore
