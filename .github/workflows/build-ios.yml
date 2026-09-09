@@ -21,28 +21,15 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Check environment
-        run: |
-          java -version
-          xcodebuild -version
-          uname -m
-
       - name: Make Gradle executable
         run: chmod +x ./gradlew
 
-      - name: Build iOS Application (.app)
-        run: ./gradlew :ios:archive --stacktrace
-
-      - name: Package Unsigned IPA
-        run: |
-          mkdir -p build_ipa/Payload
-          cp -R ios/build/robovm/IOSLauncher.app build_ipa/Payload/
-          cd build_ipa
-          zip -r ../Mindustry-v159.7-unsigned.ipa Payload
+      - name: Build Unsigned IPA
+        run: ./gradlew :ios:createIPA -Probovm.skipSigning=true --stacktrace
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: Mindustry-iOS-Unsigned
-          path: Mindustry-v159.7-unsigned.ipa
+          path: "**/*.ipa"
           if-no-files-found: error
