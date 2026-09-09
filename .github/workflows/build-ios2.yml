@@ -1,0 +1,47 @@
+name: Build Mindustry iOS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout Mindustry 159.7
+        uses: actions/checkout@v4
+        with:
+          repository: Anuken/Mindustry
+          ref: v159.7
+          fetch-depth: 0
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Check environment
+        run: |
+          java -version
+          xcodebuild -version
+          uname -m
+
+      - name: Make Gradle executable
+        run: chmod +x ./gradlew
+
+      - name: Build iOS IPA
+        run: ./gradlew :ios:createIPA --stacktrace
+
+      - name: Find IPA
+        run: |
+          echo "Searching for IPA..."
+          find . -type f -name "*.ipa" -print
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mindustry-iOS
+          path: |
+            **/*.ipa
+          if-no-files-found: error
