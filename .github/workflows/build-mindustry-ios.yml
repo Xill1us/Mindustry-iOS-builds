@@ -1,0 +1,129 @@
+name: Build Mindustry iOS IPA (LiveContainer)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mindustry_ref:
+        description: 'Ветка/тег Anuken/Mindustry для сборки'
+        required: false
+        default: 'master'
+      xcode_version:
+        description: 'Версия Xcode (см. actions/runner-images для macos-14)'
+        required: false
+        default: '15.4'
+
+jobs:
+  build-ios:
+    runs-on: macos-14
+    steps:
+      - name: Select Xcode ${{ github.event.inputs.xcode_version }}
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ github.event.inputs.xcode_version }}
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.robovm
+          key: ${{ runner.os }}-gradle-mindustry-${{ github.event.inputs.mindustry_ref }}
+
+      - name: Install ldid (fallback fakesign tool)
+        run: brew install ldid
+
+      # Arc должен лежать РЯДОМ с Mindustry (../../Arc относительно ios/), а не внутри
+      - name: Clone Arc + Mindustry as sibling directories
+        run: |
+          cd "$RUNNER_WORKSPACE"
+          git clone --depth=1 https://github.com/Anuken/Arc
+          git clone --depth=1 --branch "${{ github.event.inputs.mindustry_ref }}" https://github.com/Anuken/Mindustry
+          echo "MINDUSTRY_DIR=$RUNNER_WORKSPACE/Mindustry" >> "$GITHUB_ENV"
+
+      # ios/build.gradle жёстко прописывает iosSkipSigning = false и требует
+      # реальный Apple-сертификат/provisioning profile. Нам это не нужно —
+      # LiveContainer переподписывает приложение сам при установке.
+      - name: Patch ios/build.gradle to skip Apple code signing
+        run: |
+          cd "$MINDUSTRY_DIR"
+          sed -i '' 's/iosSkipSigning = false/iosSkipSigning = true/' ios/build.gradle
+          grep -n "iosSkipSigning" ios/build.gradle
+
+      - name: Grant exec permission to gradlew
+        run: chmod +x "$MINDUSTRY_DIR/gradlew"
+
+      # ios:deploy = ios:copyAssets (tools:pack + copyNatives) + ios:createIPA
+      # Если сборка упадёт именно на шаге подписи/архивации ipa, .app к этому
+      # моменту уже скомпилирован на диске — его подхватит фолбэк-шаг ниже.
+      - name: Build iOS app via RoboVM (ios:deploy)
+        working-directory: ${{ env.MINDUSTRY_DIR }}
+        run: ./gradlew ios:deploy --stacktrace --info
+        continue-on-error: true
+
+      - name: Show what RoboVM produced (debug)
+        working-directory: ${{ env.MINDUSTRY_DIR }}
+        run: |
+          echo "---- *.ipa ----"
+          find ios/build -iname "*.ipa" 2>/dev/null || true
+          echo "---- *.app ----"
+          find ios/build -iname "*.app" -maxdepth 6 2>/dev/null || true
+
+      - name: Package / fakesign IPA for LiveContainer
+        working-directory: ${{ env.MINDUSTRY_DIR }}
+        run: |
+          set -e
+
+          IPA="$(find ios/build -iname '*.ipa' 2>/dev/null | head -n1 || true)"
+          if [ -n "$IPA" ]; then
+            echo "Gradle уже создал ipa: $IPA"
+            cp "$IPA" "$GITHUB_WORKSPACE/Mindustry.ipa"
+            exit 0
+          fi
+
+          APP="$(find ios/build -iname '*.app' -maxdepth 6 2>/dev/null | head -n1 || true)"
+          if [ -z "$APP" ]; then
+            echo "Ни .ipa, ни .app не найдены — сборка упала раньше компиляции."
+            exit 1
+          fi
+          echo "Найден app-бандл: $APP"
+
+          WORKDIR="$(mktemp -d)"
+          mkdir -p "$WORKDIR/Payload"
+          cp -R "$APP" "$WORKDIR/Payload/"
+
+          APPCOPY="$(find "$WORKDIR/Payload" -maxdepth 1 -iname '*.app' | head -n1)"
+          echo "Payload app: $APPCOPY"
+
+          # fake-подпись (ldid) главного бинарника и всех вложенных dylib/framework —
+          # без этого некоторые связанные с codesign проверки на устройстве могут ругаться
+          find "$APPCOPY" -type f \( -perm -u+x -o -name "*.dylib" \) -print0 \
+            | while IFS= read -r -d '' bin; do
+                ldid -S "$bin" 2>/dev/null || true
+              done
+
+          (cd "$WORKDIR" && zip -r -y "$GITHUB_WORKSPACE/Mindustry.ipa" Payload)
+          echo "Собран $GITHUB_WORKSPACE/Mindustry.ipa"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mindustry-iOS-LiveContainer
+          path: Mindustry.ipa
+          if-no-files-found: error
+
+      - name: Upload build logs (for debugging failures)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            ${{ env.MINDUSTRY_DIR }}/ios/build.gradle
+            ${{ env.MINDUSTRY_DIR }}/ios/robovm.properties
+          if-no-files-found: ignore
