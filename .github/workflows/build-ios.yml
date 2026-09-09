@@ -24,8 +24,11 @@ jobs:
       - name: Make Gradle executable
         run: chmod +x ./gradlew
 
-      - name: Compile iOS Device App
-        run: ./gradlew :ios:iosDevice -Probovm.iosSignIdentity="" -Probovm.iosProvisioningProfile="" --stacktrace
+      - name: List iOS Tasks
+        run: ./gradlew :ios:tasks --all
+
+      - name: Compile iOS App
+        run: ./gradlew :ios:install --stacktrace
 
       - name: Package Unsigned IPA
         run: |
