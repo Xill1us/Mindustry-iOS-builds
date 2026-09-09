@@ -30,13 +30,17 @@ jobs:
       - name: Package Unsigned IPA
         run: |
           mkdir -p Payload
-          # Находим скомпилированный .app бандл
-          APP_PATH=$(find ios/build/robovm -name "*.app" -type d | head -n 1)
+          # Ищем .app бандл во всех подпапках ios/build
+          APP_PATH=$(find ios/build -name "*.app" -type d | head -n 1)
+          
           if [ -z "$APP_PATH" ]; then
-            echo "Error: .app bundle not found!"
+            echo "=== Error: .app bundle not found! ==="
+            echo "Contents of ios/build directory:"
+            ls -laR ios/build || echo "ios/build directory does not exist"
             exit 1
           fi
-          echo "Packing app from: $APP_PATH"
+
+          echo "Found application bundle at: $APP_PATH"
           cp -R "$APP_PATH" Payload/
           zip -r Mindustry-v159.7-unsigned.ipa Payload
 
