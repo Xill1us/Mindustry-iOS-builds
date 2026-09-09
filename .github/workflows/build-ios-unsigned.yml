@@ -24,10 +24,10 @@ jobs:
       - name: Make Gradle executable
         run: chmod +x ./gradlew
 
-      - name: Build iOS App Bundle via RoboVM
-        run: ./gradlew :ios:robovm -Probovm.archs=arm64 --stacktrace
+      - name: Build iOS App via RoboVM
+        run: ./gradlew :ios:robovmInstall -Probovm.archs=arm64 --stacktrace
 
-      - name: Package App Bundle for LiveContainer
+      - name: Package App for LiveContainer
         run: |
           APP_PATH=$(find ios/build -name "*.app" -type d | head -n 1)
           
