@@ -24,12 +24,11 @@ jobs:
       - name: Make Gradle executable
         run: chmod +x ./gradlew
 
-      - name: Build iOS App Bundle
-        run: ./gradlew :ios:build -Probovm.device.name="iPhone" --stacktrace
+      - name: Build iOS App Bundle via RoboVM
+        run: ./gradlew :ios:robovm -Probovm.archs=arm64 --stacktrace
 
       - name: Package App Bundle for LiveContainer
         run: |
-          # Ищем скомпилированную папку .app
           APP_PATH=$(find ios/build -name "*.app" -type d | head -n 1)
           
           if [ -z "$APP_PATH" ]; then
@@ -39,13 +38,13 @@ jobs:
           fi
 
           echo "Found bundle at: $APP_PATH"
-          # Упаковываем .app напрямую в ZIP (этот архив кушает LiveContainer)
-          cd $(dirname "$APP_PATH")
-          zip -r ~/Mindustry-159.7-LiveContainer.zip $(basename "$APP_PATH")
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          zip -r Mindustry-159.7-LiveContainer.ipa Payload
 
-      - name: Upload Zip Artifact
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Mindustry-LiveContainer
-          path: ~/Mindustry-159.7-LiveContainer.zip
+          path: Mindustry-159.7-LiveContainer.ipa
           if-no-files-found: error
