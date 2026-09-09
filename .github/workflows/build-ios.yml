@@ -24,19 +24,17 @@ jobs:
       - name: Make Gradle executable
         run: chmod +x ./gradlew
 
-      - name: Compile iOS App
-        run: ./gradlew :ios:build --stacktrace
+      - name: Compile iOS Device App
+        run: ./gradlew :ios:iosDevice -Probovm.iosSignIdentity="" -Probovm.iosProvisioningProfile="" --stacktrace
 
       - name: Package Unsigned IPA
         run: |
           mkdir -p Payload
-          # Ищем .app бандл во всех подпапках ios/build
           APP_PATH=$(find ios/build -name "*.app" -type d | head -n 1)
           
           if [ -z "$APP_PATH" ]; then
             echo "=== Error: .app bundle not found! ==="
-            echo "Contents of ios/build directory:"
-            ls -laR ios/build || echo "ios/build directory does not exist"
+            ls -laR ios/build
             exit 1
           fi
 
