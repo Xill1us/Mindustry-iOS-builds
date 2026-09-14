@@ -158,18 +158,27 @@ cmd_build() {
   local build_num="${APP_BUILD_NUM:-0}"
   echo "Внутренний (косметический) номер версии приложения: ${build_num}"
 
-  echo "=== Собираю iOS-натив движка Arc (jnigen) ==="
-  # Это самый ненадёжный шаг: RoboVM должен слинковать arc.framework,
-  # который jnigen компилирует из Arc/arc-core/csrc/iosgl/*.cpp и пакует
-  # для composite-сборки. Без этого шага итоговый ipa либо не соберётся
-  # (framework not found на этапе линковки), либо соберётся, но будет
-  # падать на старте с UnsatisfiedLinkError.
+  echo "=== Собираю iOS-натив движка Arc (jnigen + MetalANGLEKit) ==="
+  # Два независимых, но одинаково обязательных шага:
+  #  1) jnigenBuildAllIOS/jnigenPackageAllIOS компилирует Arc/arc-core/csrc/iosgl/*.cpp
+  #     в arc.xcframework и пакует его для composite-сборки — без этого
+  #     линковщик не находит `-framework arc`.
+  #  2) extractMetalANGLEKit скачивает и распаковывает готовый набор
+  #     фреймворков MetalANGLEKit/libGLESv2/libEGL/libfeature_support
+  #     (эмуляция OpenGL ES поверх Metal) в
+  #     Arc/backends/backend-robovm/res/META-INF/robovm/ios/libs —
+  #     без этого шага backend-robovm.jar не содержит этих фреймворков
+  #     вообще, и линковщик падает с "framework 'MetalANGLEKit' not found".
+  #     (Именно это и сломалось в предыдущем прогоне.)
   ./gradlew --no-daemon --stacktrace \
+    :Arc:backends:backend-robovm:extractMetalANGLEKit \
     :Arc:arc-core:jnigenBuildAllIOS \
     :Arc:arc-core:jnigenPackageAllIOS
 
-  echo "=== Диагностика: что получилось после jnigen ==="
+  echo "=== Диагностика: что получилось после jnigen/extract ==="
   find ../Arc -iname "*.xcframework" -o -iname "*arc-natives*" 2>/dev/null || true
+  echo "--- Содержимое res/META-INF/robovm/ios/libs у backend-robovm ---"
+  find ../Arc/backends/backend-robovm -path "*META-INF/robovm/ios*" 2>/dev/null || true
 
   echo "=== Собираю неподписанный .ipa (:ios:incrementConfig :ios:deploy) ==="
   ./gradlew --no-daemon --stacktrace \
